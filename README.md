@@ -10,14 +10,19 @@ routes new prompts to whichever pane is idle.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ monitor — queue depth · pane state · heartbeats         │
+│ 1: monitor — queue · pane state · heartbeats            │
 ├──────────────────────────┬──────────────────────────────┤
-│ codex   L1               │ opencode  R1                 │
-│ codex   L2               │ opencode  R2                 │
-│ codex   L3               │ opencode  R3                 │
-│ codex   L4               │ opencode  R4                 │
+│ A  codex                 │ B  opencode                  │
+│ C  codex                 │ D  opencode                  │
+│ E  codex                 │ F  opencode                  │
+│ G  codex                 │ H  opencode                  │
 └──────────────────────────┴──────────────────────────────┘
 ```
+
+Slots: `1` for the monitor pane, `A`–`H` for the 8 agents (row-major
+across the layout). The default `build_pool` lays them out as 4×2 with
+codex in the left column and opencode in the right, but the labels stay
+the same for any topology you reshape into.
 
 ## Install
 

@@ -9,6 +9,7 @@
 #   kill       — explicit teardown only (don't recreate)
 #   status     — list panes + Ghostty windows
 #   respawn    — recycle agent panes (see `respawn --help`)
+#   reshape    — switch layouts (4x2 / 2x4 / 5x2) without killing agents; auto-grows pool if target needs more panes
 #
 # Default is warm — running this script repeatedly does NOT kill long-running TUI agents
 # unless you explicitly say `cold` or `kill`.
@@ -42,17 +43,17 @@ build_pool() {
   local WRAP="$HOME/.local/bin/pool-wrap.sh"
   local RENDER="$HOME/.local/bin/pool-render.sh"
 
-  # Start with L1 codex as the only pane.
+  # Start with the first codex pane (will become slot A in row-major order).
   tmux new-session -d -s pool -x 200 -y 240 -c "$CWD" "$WRAP codex"
   local PANE_A
   PANE_A=$(tmux list-panes -t pool:0 -F '#{pane_id}' | head -1)
 
-  # Insert a 6-line monitor strip ABOVE L1 (-b = before, -l 6 = absolute lines).
+  # Insert a 6-line monitor strip ABOVE the codex pane (-b = before).
   local MONITOR
   MONITOR=$(tmux split-window -v -b -l 6 -P -F '#{pane_id}' -t "$PANE_A" -c "$CWD" "$RENDER --watch")
   tmux select-pane -t "$MONITOR" -T 'pool:monitor' 2>/dev/null || true
 
-  # R1 opencode — split L1 horizontally 50/50. Capture pane_id directly.
+  # First opencode pane — split the codex pane horizontally 50/50.
   local PANE_B
   PANE_B=$(tmux split-window -h -p 50 -P -F '#{pane_id}' -t "$PANE_A" -c "$CWD" "$WRAP opencode")
 
@@ -219,7 +220,7 @@ cmd_respawn() {
       --all)              opt_all=1; shift ;;
       --monitor)          opt_monitor=1; shift ;;
       --tier)             opt_tier="$2"; shift 2 ;;
-      --pos)              # accepts L1 or comma-separated L1,R2
+      --pos)              # accepts A or comma-separated A,C,E
                           IFS=',' read -ra _pp <<< "$2"
                           opt_positions+=("${_pp[@]}"); shift 2 ;;
       --yes|-y)           opt_yes=1; shift ;;
@@ -235,7 +236,8 @@ registry stay consistent). Without --all/--done/--pos/--monitor, prints help.
 
 Selection flags:
   --tier codex|opencode|all   Restrict by tier
-  --pos L1..L4,R1..R4         Specific positions (repeatable or comma list)
+  --pos A..H                  Specific positions (repeatable or comma list,
+                              e.g. --pos A --pos C  OR  --pos A,C,E)
   --all                       All agent panes regardless of state
   --done                      Only DONE panes (idle, has history)
   --monitor                   Refresh the monitor dashboard pane only
@@ -250,9 +252,14 @@ Examples:
   pool-launch.sh respawn --done              # respawn all DONE panes (prompt)
   pool-launch.sh respawn --done --yes        # ... no prompt
   pool-launch.sh respawn --tier codex --all  # recycle every codex pane
-  pool-launch.sh respawn --pos L3,R2 --yes   # specific positions
+  pool-launch.sh respawn --pos C,E --yes     # specific positions
   pool-launch.sh respawn --monitor           # just the dashboard
   pool-launch.sh respawn --plan              # diagram only, no action
+
+Slot naming: 1 = monitor (dashboard). A-H = agent panes, assigned in
+row-major order (top row first, then left-to-right within rows). The
+labels are layout-agnostic — same letters whether the pool is 4×2, 3×3,
+or anything else.
 HELP
         return 0 ;;
       *) echo "unknown flag: $1 (try respawn --help)" >&2; return 2 ;;
@@ -284,11 +291,11 @@ HELP
   if [[ ${#opt_positions[@]} -gt 0 ]]; then
     local p; for p in "${opt_positions[@]}"; do
       p=$(printf '%s' "$p" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
-      [[ "$p" =~ ^[LR][1-4]$ ]] || { echo "bad --pos: $p" >&2; return 2; }
+      [[ "$p" =~ ^[A-H]$ ]] || { echo "bad --pos: $p (expected A..H)" >&2; return 2; }
       SELECTED+=("$p")
     done
   elif [[ $opt_interactive == 1 ]]; then
-    printf '  Refresh which? Positions (e.g. L3,R2), "all", or "none": '
+    printf '  Refresh which? Positions (e.g. C,E), "all", or "none": '
     local reply
     read -r reply
     case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
@@ -380,6 +387,230 @@ HELP
 #     tier's wrap until count == 4.
 #   - If a column has 0 panes: split each pane of the opposite column
 #     horizontally with this tier's wrap to recreate the column.
+
+# ── reshape ───────────────────────────────────────────────────────────────────
+# Switch the pool between two layouts WITHOUT killing any agent. Used to move
+# between portrait (4×2) and widescreen (2×4) without losing state.
+#
+# Mechanics:
+#   1. break-pane the monitor to a stash window (preserves the pool-render
+#      process — pane_id stays the same, only the parent window changes).
+#   2. build a custom tmux layout string for the 8 agent panes in the target
+#      shape, including the pre-computed checksum, and apply via
+#      select-layout. This re-arranges existing panes; processes survive.
+#   3. join-pane the monitor back as a full-width 6-row strip on top, using
+#      the `-f` flag so the split affects the whole window.
+#   4. run fix_layout to balance proportions.
+#
+# Both target shapes:
+#   4x2 (portrait)   — 4 rows × 2 cols. Codex left col, opencode right col.
+#                      Slots row-major: A B (top row) / C D / E F / G H.
+#   2x4 (widescreen) — 2 rows × 4 cols. Codex top row (A B C D),
+#                      opencode bottom row (E F G H).
+
+# Compute tmux layout-string checksum. Algorithm from tmux source
+# (layout-custom.c, layout_checksum): 16-bit rotate-right then add each byte.
+_compute_layout_checksum() {
+  local s="$1"
+  local csum=0
+  local i c
+  for ((i = 0; i < ${#s}; i++)); do
+    c=$(printf '%d' "'${s:$i:1}")
+    csum=$(( ((csum >> 1) + ((csum & 1) << 15) + c) & 0xFFFF ))
+  done
+  printf '%04x' "$csum"
+}
+
+# Generic grid layout — places rows*cols leaves in row-major order using
+# placeholder pane numbers 0..N-1. Tmux's select-layout fills leaves in
+# tree-walk order using the current pane_index order anyway, so the
+# pane numbers in the string are just placeholders; what matters is the
+# topology (rows × cols + dimensions). Callers reorder panes via
+# swap-pane before applying.
+_build_grid_layout() {
+  local W="$1" H="$2" rows="$3" cols="$4"
+  local row_h=$(( (H - (rows - 1)) / rows ))
+  local row_h_last=$(( H - (rows - 1) - row_h * (rows - 1) ))
+  local col_w=$(( (W - (cols - 1)) / cols ))
+  local col_w_last=$(( W - (cols - 1) - col_w * (cols - 1) ))
+
+  local -a y x
+  y[0]=0; for ((r = 1; r < rows; r++)); do y[$r]=$(( ${y[$((r-1))]} + row_h + 1 )); done
+  x[0]=0; for ((c = 1; c < cols; c++)); do x[$c]=$(( ${x[$((c-1))]} + col_w + 1 )); done
+
+  local layout="${W}x${H},0,0["
+  local r c rh cw idx
+  for ((r = 0; r < rows; r++)); do
+    rh=$row_h; [[ $r -eq $((rows-1)) ]] && rh=$row_h_last
+    layout+="${W}x${rh},0,${y[$r]}{"
+    for ((c = 0; c < cols; c++)); do
+      cw=$col_w; [[ $c -eq $((cols-1)) ]] && cw=$col_w_last
+      idx=$(( r * cols + c ))
+      layout+="${cw}x${rh},${x[$c]},${y[$r]},${idx}"
+      [[ $c -lt $((cols-1)) ]] && layout+=","
+    done
+    layout+="}"
+    [[ $r -lt $((rows-1)) ]] && layout+=","
+  done
+  layout+="]"
+  printf '%s,%s' "$(_compute_layout_checksum "$layout")" "$layout"
+}
+
+# Re-read codex/opencode pane numbers (without %) in current spatial order.
+# Sets global arrays _CDX and _OPC.
+_collect_tiers() {
+  local mon="$1"
+  local raw
+  raw=$(tmux list-panes -t pool:0 \
+        -F '#{pane_id}|#{pane_top}|#{pane_left}|#{pane_current_command}' \
+        | awk -F'|' -v mon="$mon" '$1 != mon')
+  local cdx_list opc_list
+  cdx_list=$(printf '%s\n' "$raw" | awk -F'|' '$4 ~ /codex/   { print $2"|"$3"|"$1 }' \
+             | sort -t '|' -k1,1n -k2,2n | awk -F'|' '{ sub(/^%/, "", $3); print $3 }')
+  opc_list=$(printf '%s\n' "$raw" | awk -F'|' '$4 ~ /opencode/{ print $2"|"$3"|"$1 }' \
+             | sort -t '|' -k1,1n -k2,2n | awk -F'|' '{ sub(/^%/, "", $3); print $3 }')
+  _CDX=()
+  _OPC=()
+  while IFS= read -r p; do [[ -n "$p" ]] && _CDX+=("$p"); done <<< "$cdx_list"
+  while IFS= read -r p; do [[ -n "$p" ]] && _OPC+=("$p"); done <<< "$opc_list"
+}
+
+cmd_reshape() {
+  local target="${1:-}"
+  local rows cols
+  case "$target" in
+    4x2|portrait)         rows=4; cols=2 ;;
+    2x4|widescreen|wide)  rows=2; cols=4 ;;
+    5x2|tall)             rows=5; cols=2 ;;
+    -h|--help|"")
+      cat <<'HELP'
+usage: pool-launch.sh reshape 4x2|2x4|5x2
+
+Switches the pool layout without killing existing agents. Pane processes
+(and the monitor's pool-render loop) survive — tmux only re-arranges
+existing panes via break-pane → select-layout (custom topology) →
+join-pane. If the target needs more agents than the pool currently has,
+new panes are spawned via pool-wrap.sh (codex/opencode launched fresh).
+
+Layouts:
+  4x2 (portrait)    4 rows × 2 cols. Codex left col, opencode right col.
+                    Default `pool cold` shape. 4 codex + 4 opencode.
+  2x4 (widescreen)  2 rows × 4 cols. Codex top row, opencode bottom.
+                    4 codex + 4 opencode.
+  5x2 (tall)        5 rows × 2 cols. Codex left col, opencode right col.
+                    5 codex + 5 opencode. Auto-grows from 4+4 if needed.
+
+All keep a 6-row monitor strip across the top.
+
+Tier convention:
+  cols == 2 → codex left column, opencode right (interleaved per row)
+  cols >= 4 → codex top rows, opencode bottom (sequential by row)
+HELP
+      [[ -z "$target" ]] && return 2 || return 0
+      ;;
+    *) echo "reshape: unknown target '$target' (try 4x2|2x4|5x2)" >&2; return 2 ;;
+  esac
+
+  tmux has-session -t pool 2>/dev/null || { echo "no pool session" >&2; return 1; }
+  local MONITOR; MONITOR=$(pool_monitor_pane)
+  [[ -z "$MONITOR" ]] && { echo "no registered monitor pane (run pool warm first)" >&2; return 1; }
+
+  # Determine how many of each tier this shape needs.
+  local total=$(( rows * cols )) need_cdx need_opc
+  if [[ "$cols" -eq 2 ]]; then
+    # Tall shape: codex left, opencode right; rows of each tier
+    need_cdx=$rows; need_opc=$rows
+  else
+    # Wide shape: codex top rows, opencode bottom rows; cols of each tier
+    need_cdx=$cols; need_opc=$cols
+  fi
+
+  local -a _CDX _OPC
+  _collect_tiers "$MONITOR"
+
+  # Auto-grow if too few panes. Shrinking is intentionally NOT supported
+  # (would require killing live agents — user should `respawn` manually first).
+  if [[ "${#_CDX[@]}" -lt "$need_cdx" || "${#_OPC[@]}" -lt "$need_opc" ]]; then
+    echo "reshape: have ${#_CDX[@]} codex + ${#_OPC[@]} opencode; need $need_cdx + $need_opc — growing"
+    local WRAP="$HOME/.local/bin/pool-wrap.sh"
+    while [[ "${#_CDX[@]}" -lt "$need_cdx" ]]; do
+      local anchor; anchor=$(tmux list-panes -t pool:0 -F '#{pane_id} #{pane_current_command}' \
+                             | awk -v mon="$MONITOR" '$1 != mon && $2 ~ /codex/ { print $1; exit }')
+      [[ -z "$anchor" ]] && { echo "reshape: no codex pane to split from" >&2; return 1; }
+      tmux split-window -t "$anchor" "$WRAP codex"
+      sleep 0.3
+      _collect_tiers "$MONITOR"
+    done
+    while [[ "${#_OPC[@]}" -lt "$need_opc" ]]; do
+      local anchor; anchor=$(tmux list-panes -t pool:0 -F '#{pane_id} #{pane_current_command}' \
+                             | awk -v mon="$MONITOR" '$1 != mon && $2 ~ /opencode/ { print $1; exit }')
+      [[ -z "$anchor" ]] && { echo "reshape: no opencode pane to split from" >&2; return 1; }
+      tmux split-window -t "$anchor" "$WRAP opencode"
+      sleep 0.3
+      _collect_tiers "$MONITOR"
+    done
+  elif [[ "${#_CDX[@]}" -gt "$need_cdx" || "${#_OPC[@]}" -gt "$need_opc" ]]; then
+    echo "reshape: have ${#_CDX[@]} codex + ${#_OPC[@]} opencode; target needs $need_cdx + $need_opc" >&2
+    echo "reshape: shrinking is not supported — kill the extra panes (tmux kill-pane) first" >&2
+    return 1
+  fi
+
+  # Stash monitor; pool window keeps just agent panes for the reshape.
+  tmux break-pane -d -s "$MONITOR" -n pool-mon-stash >/dev/null 2>&1 \
+    || { echo "reshape: break-pane failed" >&2; return 1; }
+
+  # Compute the target pane_id order at indices 0..total-1.
+  # cols == 2: interleaved per row [c0,o0,c1,o1,...]
+  # cols >= 4: sequential [c0,c1,...,o0,o1,...]
+  local -a target_order
+  local i
+  if [[ "$cols" -eq 2 ]]; then
+    for ((i = 0; i < rows; i++)); do
+      target_order+=("%${_CDX[$i]}" "%${_OPC[$i]}")
+    done
+  else
+    for ((i = 0; i < need_cdx; i++)); do target_order+=("%${_CDX[$i]}"); done
+    for ((i = 0; i < need_opc; i++)); do target_order+=("%${_OPC[$i]}"); done
+  fi
+
+  # Snapshot current pane_id at each index, then swap into target_order.
+  # (tmux select-layout fills leaves in tree order from current pane_index
+  # order, ignoring pane numbers in the layout string.)
+  local -a current
+  while IFS= read -r line; do
+    current+=("$(awk '{print $2}' <<< "$line")")
+  done < <(tmux list-panes -t pool:0 -F '#{pane_index} #{pane_id}')
+
+  local j tmp
+  for ((i = 0; i < total; i++)); do
+    if [[ "${current[$i]}" != "${target_order[$i]}" ]]; then
+      for ((j = i + 1; j < total; j++)); do
+        if [[ "${current[$j]}" == "${target_order[$i]}" ]]; then
+          tmux swap-pane -s "pool:0.$j" -t "pool:0.$i"
+          tmp="${current[$i]}"; current[$i]="${current[$j]}"; current[$j]="$tmp"
+          break
+        fi
+      done
+    fi
+  done
+
+  # Apply the topology.
+  local W H
+  W=$(tmux display-message -t pool:0 -p '#{window_width}')
+  H=$(tmux display-message -t pool:0 -p '#{window_height}')
+  local layout; layout=$(_build_grid_layout "$W" "$H" "$rows" "$cols")
+
+  if ! tmux select-layout -t pool:0 "$layout" 2>/dev/null; then
+    echo "reshape: failed to apply layout — reattaching monitor and aborting" >&2
+    tmux join-pane -s pool-mon-stash.0 -t pool:0.0 -v -b -l 6 -f >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  tmux join-pane -s pool-mon-stash.0 -t pool:0.0 -v -b -l 6 -f
+  fix_layout
+  echo "reshape: pool is now ${rows}×${cols} (monitor strip + $total agents)"
+}
+
 fill_missing() {
   tmux has-session -t pool 2>/dev/null || return 0
   local WRAP="$HOME/.local/bin/pool-wrap.sh"
@@ -493,7 +724,10 @@ fill_missing() {
 }
 
 # After Ghostty resize, tmux may have crushed pane proportions. Force
-# monitor=6 lines and an even 4×2 distribution across the remaining rows.
+# monitor=6 lines and an even N-row distribution across the remaining rows,
+# where N is derived from the actual number of distinct column offsets —
+# so this works for both the default 4×2 (2 cols, 4 rows each) and the
+# widescreen 2×4 (4 cols, 2 rows each) layout, without any flag.
 fix_layout() {
   tmux has-session -t pool 2>/dev/null || return 0
   local MONITOR
@@ -508,19 +742,28 @@ fix_layout() {
   WIN_H=$(tmux display-message -t pool:0 -p '#{window_height}' 2>/dev/null)
   [[ -z "$WIN_H" || "$WIN_H" -lt 30 ]] && return 0
   local AGENT_H=$((WIN_H - 6))
-  local ROW_H=$((AGENT_H / 4))
+
+  # Discover column offsets dynamically. agent-count and column-count
+  # together determine rows. Works for 4×2 (8 agents, 2 cols → 4 rows),
+  # 2×4 (8 agents, 4 cols → 2 rows), 5×2 (10 agents, 2 cols → 5 rows),
+  # and any other rectangular shape.
+  local col_list ncols n_agents
+  col_list=$(tmux list-panes -t pool:0 -F '#{pane_id} #{pane_left}' \
+             | awk -v mon="$MONITOR" '$1 != mon { print $2 }' \
+             | sort -nu)
+  ncols=$(printf '%s\n' "$col_list" | grep -c .)
+  [[ "$ncols" -lt 1 ]] && return 0
+  n_agents=$(tmux list-panes -t pool:0 -F '#{pane_id}' \
+             | awk -v mon="$MONITOR" '$1 != mon' | wc -l | tr -d ' ')
+  local rows=$(( n_agents / ncols ))
+  [[ "$rows" -lt 1 ]] && rows=1
+  local ROW_H=$((AGENT_H / rows))
   [[ "$ROW_H" -lt 4 ]] && return 0
 
-  # For each column, walk panes top → bottom by pane_top and resize each to ROW_H,
-  # except the last (which absorbs the remainder). Column offsets come from
-  # pool_column_offsets so a future tmux/ghostty/font change that shifts the
-  # right column's pane_left doesn't silently no-op the resize.
-  local col_offsets left_col right_col
-  col_offsets=$(pool_column_offsets 2>/dev/null) || col_offsets="0 76"
-  read -r left_col right_col <<< "$col_offsets"
+  # For each column offset, walk panes top → bottom and resize each to ROW_H,
+  # except the last (which absorbs the remainder).
   local col
-  for col in "$left_col" "$right_col"; do
-    # tmux list-panes filters by left column ≈ col (allow small drift)
+  for col in $col_list; do
     local panes
     panes=$(tmux list-panes -t pool:0 \
       -F '#{pane_id} #{pane_left} #{pane_top}' \
@@ -603,6 +846,12 @@ case "$CMD" in
     fi
     ;;
 
+  reshape)
+    shift
+    cmd_reshape "$@"
+    exit $?
+    ;;
+
   fill|repair)
     if ! tmux has-session -t pool 2>/dev/null; then
       echo "no pool session — run \`pool-launch.sh warm\` first" >&2; exit 1
@@ -647,6 +896,7 @@ case "$CMD" in
     echo "  warm    (default) — attach to existing pool, fill missing panes, or cold-build if none" >&2
     echo "  cold              — destroy and rebuild" >&2
     echo "  fill              — restore any missing panes in-place (no agent kills)" >&2
+    echo "  reshape 4x2|2x4|5x2 — switch layout shape without killing agents (auto-grows)" >&2
     echo "  autoresize        — debounced rebalance for tmux client-resized hook" >&2
     echo "  kill              — destroy only, do not recreate" >&2
     echo "  status            — list panes + clients + Ghostty windows" >&2

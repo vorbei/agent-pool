@@ -126,23 +126,28 @@ pool_monitor_pane() {
 }
 
 # ── layout: position map (slot|pane_id|target|kind), monitor excluded ─────────
-# Slots are L1..L4 (left column top→bottom) and R1..R4 (right column).
-# Spatial: sort by pane_left, then pane_top. The smallest pane_left is the
-# left column; everything with a larger pane_left is the right column.
-# Single awk pass — pane_index is taken directly from tmux so we don't need
-# a per-row pool_pane_id_to_target lookup.
+# Slots are A..H assigned in **row-major** order across whatever physical
+# layout the pool currently has — 4×2, 3×3, 2×4, doesn't matter. The
+# monitor pane is excluded and uses the separate slot label `1`.
+#
+# Sort key: (pane_top, pane_left) — top row first, then left-to-right
+# within a row. A is whichever non-monitor pane is closest to the top-left
+# corner; H is the last one when scanned that way.
+#
+# Tier (codex / opencode / other) is whatever process happens to be in
+# that pane — not derived from the slot label.
 pool_position_map() {
   local monitor; monitor=$(pool_monitor_pane)
   local session="$POOL_SESSION"
   tmux list-panes -t "$session:0" \
        -F '#{pane_id}|#{pane_index}|#{pane_left}|#{pane_top}|#{pane_current_command}' 2>/dev/null \
     | awk -F'|' -v mon="$monitor" '$1 != mon { print }' \
-    | sort -t '|' -k3,3n -k4,4n \
+    | sort -t '|' -k4,4n -k3,3n \
     | awk -F'|' -v session="$session" '
-        BEGIN { l=0; r=0; left="" }
+        BEGIN { n = 0; alphabet = "ABCDEFGHIJKLMNOP" }
         {
-          if (left == "") left = $3
-          if ($3 == left) { l++; slot = "L" l } else { r++; slot = "R" r }
+          n++
+          slot = substr(alphabet, n, 1)
           kind = "other"
           if ($5 ~ /codex/)    kind = "codex"
           if ($5 ~ /opencode/) kind = "opencode"

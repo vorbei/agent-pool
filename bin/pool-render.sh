@@ -8,10 +8,10 @@
 # Layout (~6 lines, fits a 6-row monitor pane):
 #   queue: 2 codex / 0 opencode  panes: 5/2/1 busy/idle/stale  uptime 2h
 #   ───────────────────────────────────────────────────────────────────
-#   [L1] cdx MAX-623:plan   4m ♥2  │ [R1] opc MAX-624:rev  1m ♥3
-#   [L2] cdx idle                  │ [R2] opc idle
-#   [L3] cdx MAX-625:work 12m ♥45* │ [R3] opc (stale 2m)
-#   [L4] cdx locked                │ [R4] opc idle
+#   [A] cdx MAX-623:plan   4m ♥2  │ [B] opc MAX-624:rev  1m ♥3
+#   [C] cdx idle                  │ [D] opc idle
+#   [E] cdx MAX-625:work 12m ♥45* │ [F] opc (stale 2m)
+#   [G] cdx locked                │ [H] opc idle
 set -euo pipefail
 
 # Shared helpers (pool_pane_idle / pool_pane_has_history / pool_canonical_kind /
@@ -61,56 +61,33 @@ read_panes() {
     2>/dev/null || true
 }
 
-# Classify panes into L1..L4 (left col, top→bottom) and R1..R4 (right col).
-# Excludes the monitor pane (top row, full width).
+# Classify panes into A..H (row-major across whatever physical layout the
+# pool currently has — 4×2, 3×3, anything). The monitor pane is excluded.
 # Echoes lines: SLOT<TAB>pane_id<TAB>pane_index<TAB>cmd<TAB>title
 classify() {
   local monitor="$1"
   read_panes | awk -v mon="$monitor" '
-    BEGIN { FS=OFS="\t" }
+    BEGIN { FS=OFS="\t"; alphabet="ABCDEFGHIJKLMNOP"; n=0 }
     $1 == mon { next }
-    {
-      panes[NR] = $0
-      lefts[$3] = 1
-      tops[$1]  = $4
-    }
+    { n++; panes[n] = $0 }
     END {
-      # Determine left/right column split: smallest left = left col, others right.
-      n_left = 0
-      for (l in lefts) col[++n_left] = l
-      # pick min and max left
-      min_l = 999999; max_l = 0
-      for (i = 1; i <= n_left; i++) {
-        v = col[i] + 0
-        if (v < min_l) min_l = v
-        if (v > max_l) max_l = v
-      }
-      # Sort panes by top within each column.
-      ln = 0; rn = 0
-      for (k in panes) {
-        split(panes[k], f, "\t")
-        if (f[3]+0 == min_l) { left_idx[++ln] = k }
-        else                 { right_idx[++rn] = k }
-      }
-      # bubble-sort by top (small N)
-      sort_by_top(left_idx, ln)
-      sort_by_top(right_idx, rn)
-      for (i = 1; i <= ln; i++) {
-        split(panes[left_idx[i]], f, "\t")
-        print "L" i, f[1], f[2], f[5], f[6]
-      }
-      for (i = 1; i <= rn; i++) {
-        split(panes[right_idx[i]], f, "\t")
-        print "R" i, f[1], f[2], f[5], f[6]
-      }
-    }
-    function sort_by_top(arr, n,    i, j, tmp) {
-      for (i = 1; i <= n; i++)
+      # Bubble-sort by (pane_top, pane_left) — top row first, then
+      # left-to-right within a row. Small N; readability over speed.
+      for (i = 1; i <= n; i++) idx[i] = i
+      for (i = 1; i <= n; i++) {
         for (j = i+1; j <= n; j++) {
-          split(panes[arr[i]], a, "\t")
-          split(panes[arr[j]], b, "\t")
-          if (a[4]+0 > b[4]+0) { tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp }
+          split(panes[idx[i]], a, FS)
+          split(panes[idx[j]], b, FS)
+          if (a[4]+0 > b[4]+0 || (a[4]+0 == b[4]+0 && a[3]+0 > b[3]+0)) {
+            tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp
+          }
         }
+      }
+      for (i = 1; i <= n; i++) {
+        split(panes[idx[i]], f, FS)
+        slot = substr(alphabet, i, 1)
+        print slot, f[1], f[2], f[5], f[6]   # SLOT, pid, idx, cmd, title
+      }
     }
   '
 }
@@ -143,8 +120,10 @@ render() {
   local now=$(now_epoch)
 
   # Build per-slot rendered cells. Avoid associative arrays (bash 3.2 on macOS).
-  local CELL_L1='' CELL_L2='' CELL_L3='' CELL_L4=''
-  local CELL_R1='' CELL_R2='' CELL_R3='' CELL_R4=''
+  # Supports up to A-J (10 slots); pool_position_map alphabet allows A-P.
+  local CELL_A='' CELL_B='' CELL_C='' CELL_D='' CELL_E=''
+  local CELL_F='' CELL_G='' CELL_H='' CELL_I='' CELL_J=''
+  local SLOT_LIST=''
   while IFS=$'\t' read -r slot pid idx cmd title; do
     [[ -z "$slot" ]] && continue
     local kind
@@ -211,11 +190,13 @@ render() {
     fi
     local rendered="${color}[${slot}] ${kind} ${body}${C_RESET}"
     case "$slot" in
-      L1) CELL_L1="$rendered" ;; L2) CELL_L2="$rendered" ;;
-      L3) CELL_L3="$rendered" ;; L4) CELL_L4="$rendered" ;;
-      R1) CELL_R1="$rendered" ;; R2) CELL_R2="$rendered" ;;
-      R3) CELL_R3="$rendered" ;; R4) CELL_R4="$rendered" ;;
+      A) CELL_A="$rendered" ;; B) CELL_B="$rendered" ;;
+      C) CELL_C="$rendered" ;; D) CELL_D="$rendered" ;;
+      E) CELL_E="$rendered" ;; F) CELL_F="$rendered" ;;
+      G) CELL_G="$rendered" ;; H) CELL_H="$rendered" ;;
+      I) CELL_I="$rendered" ;; J) CELL_J="$rendered" ;;
     esac
+    SLOT_LIST+="$slot "
   done <<< "$panes_data"
 
   # Each line ends with `\033[K` (clear-to-end-of-line) so the --watch loop's
@@ -238,13 +219,53 @@ render() {
   printf '%s───────────────────────  ^b r = respawn done panes  ───────────────────────%s%s\n' \
     "$C_DIM" "$C_RESET" "$EL"
 
-  # Pane rows
-  local row L R lvar rvar
-  for row in 1 2 3 4; do
-    lvar="CELL_L$row"; rvar="CELL_R$row"
-    L="${!lvar}"; [[ -z "$L" ]] && L="${C_DIM}[L$row] —${C_RESET}"
-    R="${!rvar}"; [[ -z "$R" ]] && R="${C_DIM}[R$row] —${C_RESET}"
-    printf '%-50b %s│%s %b%s\n' "$L" "$C_DIM" "$C_RESET" "$R" "$EL"
+  # Pane rows — adapt the dashboard's grid to the physical pool layout.
+  # Read the actual column count from tmux, then chunk SLOT_LIST into
+  # rows of that width. Works for 4×2, 2×4, 5×2, and any rectangular
+  # shape with up to 10 agents (A-J).
+  local ncols
+  ncols=$(tmux list-panes -t "$POOL_SESSION:0" -F '#{pane_id} #{pane_left}' 2>/dev/null \
+          | awk -v mon="$monitor" '$1 != mon { print $2 }' | sort -nu | wc -l | tr -d ' ')
+  [[ "$ncols" -lt 2 ]] && ncols=2
+
+  # Slot order from classify (row-major). Chunk into ncols-sized rows.
+  local -a slot_arr=()
+  for s in $SLOT_LIST; do slot_arr+=("$s"); done
+  local total=${#slot_arr[@]}
+  local i row_cells cell s
+
+  i=0
+  while [[ $i -lt $total ]]; do
+    local -a row=()
+    local c
+    for ((c = 0; c < ncols && i < total; c++, i++)); do
+      s="${slot_arr[$i]}"
+      cell="$(eval "echo \$CELL_$s")"
+      [[ -z "$cell" ]] && cell="${C_DIM}[$s] —${C_RESET}"
+      row+=("$cell")
+    done
+    case "$ncols" in
+      2) printf '%-50b %s│%s %b%s\n' \
+           "${row[0]}" "$C_DIM" "$C_RESET" "${row[1]:-}" "$EL" ;;
+      4) printf '%-30b %s│%s %-30b %s│%s %-30b %s│%s %b%s\n' \
+           "${row[0]}" "$C_DIM" "$C_RESET" \
+           "${row[1]:-}" "$C_DIM" "$C_RESET" \
+           "${row[2]:-}" "$C_DIM" "$C_RESET" \
+           "${row[3]:-}" "$EL" ;;
+      5) printf '%-24b %s│%s %-24b %s│%s %-24b %s│%s %-24b %s│%s %b%s\n' \
+           "${row[0]}" "$C_DIM" "$C_RESET" \
+           "${row[1]:-}" "$C_DIM" "$C_RESET" \
+           "${row[2]:-}" "$C_DIM" "$C_RESET" \
+           "${row[3]:-}" "$C_DIM" "$C_RESET" \
+           "${row[4]:-}" "$EL" ;;
+      *) # Generic fallback: print joined by ` │ `
+         local line=""
+         for cell in "${row[@]}"; do
+           [[ -n "$line" ]] && line+=" ${C_DIM}│${C_RESET} "
+           line+="$cell"
+         done
+         printf '%b%s\n' "$line" "$EL" ;;
+    esac
   done
 }
 
