@@ -2,158 +2,148 @@
 
 > English · [简体中文](./claude-code.zh.md)
 
-Three patterns we actually use day-to-day. The Claude Code agent
-(running in *your* terminal) treats the pool like a co-worker bench —
-it writes a prompt to disk, hands it to a pane, waits for the reply,
-and moves on.
+The pool is most useful when you're *already* in a Claude Code session
+and realize the next move would go faster with a second opinion, a
+parallel implementation, or just an independent set of eyes. Eight
+warm agents sitting next door, addressable from one shell. Here's how
+the patterns we actually reach for tend to play out.
 
-## Pattern 1 — Multi-agent review (codex + opencode in parallel)
+## Two heads on the same diff
 
-Best for code review, design critique, planning audit. You get two
-independent opinions at once, then synthesize. Cross-validation catches
-the things one model missed.
+Reviews are the easiest pattern to feel the value of. Hand the same
+prompt to one codex pane and one opencode pane at the same time. They
+read independently, write independently, and the *overlap* between
+their reports is your high-confidence bug list.
+
+This document, for example, exists because we did this on the pool's
+own scripts. Two agents, same prompt: "review these five files for
+simplification and real bugs." Three minutes later, two structured
+reports on disk — about 12KB from codex, 17KB from opencode. Both
+flagged the same nested-locking bug in `cmd_dispatch`. Both flagged
+`pool-refresh.sh` bypassing the heartbeat wrapper. *Then* codex caught
+a docstring lie I'd missed, and opencode caught a magic number I'd
+missed. Different blind spots, same core findings.
+
+The minimum to make it happen:
 
 ```bash
-# 1. Write the prompt once
-cat > /tmp/review.md <<'EOF'
-Review the diff at <path>. Output a Markdown report at
-  ~/.claude/pool-history/review-REVIEWER.md
-where REVIEWER is "codex" if you are the codex agent and "opencode"
-if you are opencode. Findings grouped by severity, file:line refs.
-When done, print DONE: <path>.
-EOF
+PROMPT=/tmp/review.md   # ask the agent to write its report to a path
+                        # like ~/.claude/pool-history/review-<reviewer>.md
+                        # and to print DONE when finished
 
-# 2. Acquire one pane of each kind (fresh sessions, no carry-over)
-CDX=$(pool-task.sh acquire-for pr-NNN-cdx codex)
-OPC=$(pool-task.sh acquire-for pr-NNN-opc opencode)
-pool-task.sh new-session "$CDX"
-pool-task.sh new-session "$OPC"
-
-# 3. Fire both in parallel, wait for both
-pool-task.sh send "$CDX" /tmp/review.md
-pool-task.sh send "$OPC" /tmp/review.md
-pool-task.sh wait "$CDX" --timeout 1800 &
-pool-task.sh wait "$OPC" --timeout 1800 &
-wait
-
-# 4. Read both reports, merge in your head (or have Claude Code do it)
-cat ~/.claude/pool-history/review-{codex,opencode}.md
-
-# 5. Release
-pool-task.sh done "$CDX"; pool-task.sh forget pr-NNN-cdx
-pool-task.sh done "$OPC"; pool-task.sh forget pr-NNN-opc
+CDX=$(pool-task.sh acquire-for pr-1234-cdx codex)
+OPC=$(pool-task.sh acquire-for pr-1234-opc opencode)
+pool-task.sh new-session "$CDX"; pool-task.sh send "$CDX" "$PROMPT"
+pool-task.sh new-session "$OPC"; pool-task.sh send "$OPC" "$PROMPT"
+pool-task.sh wait "$CDX" & pool-task.sh wait "$OPC" & wait
 ```
 
-**What it looks like in practice.** When we used this pattern to review
-the pool scripts themselves (yes, the pool reviewing the pool), both
-agents independently flagged:
+Then synthesize the two reports yourself, or pipe them back into a
+third agent. The point isn't the bash — it's that you spent three
+minutes of clock time and got two genuinely independent reads on a
+piece of code, which is something you cannot buy at any speed from a
+single model.
 
-- A nested-locking bug in `pool-task.sh` `cmd_dispatch` — same file,
-  same lines, same proposed fix
-- `pool-refresh.sh` calling `tmux respawn-pane` directly instead of
-  going through `pool-wrap.sh` (no heartbeat, broken registry)
+## Keeping context across phases
 
-Codex also caught a `gc-stale` docstring/behavior mismatch the opencode
-side missed; opencode caught a magic-number `76` hardcode codex missed.
-Two takes give you both the **convergent core bugs** (high confidence,
-fix these first) and **divergent edge cases** (lower confidence, check
-manually). Total wall time: ~3 minutes for ~12KB + ~17KB of structured
-findings.
+Sometimes you want the *same* agent for plan → debug → fix → confirm,
+because the conversation it just had with itself is half the value.
+That's what `acquire-for TASK KIND` is for: the same TASK name always
+hands you back the same pane, so phase 2 inherits phase 1's memory.
 
-## Pattern 2 — Multi-phase task with affinity
+A normal session might look like: planning prompt goes in, agent walks
+through approach, you `wait`, read the answer, decide if you like it,
+then send the implementation prompt to *the same pane*. The agent
+doesn't need to be re-primed on the design — it just argued for that
+design ten minutes ago.
 
-Best for plan → debug → implement → review chains where the agent's
-conversation context is worth keeping. `acquire-for TASK KIND` reuses
-the same pane on every call for that TASK name, so phase 2's question
-inherits phase 1's context.
+The shape is small:
 
 ```bash
-# Phase 1: planning
 PANE=$(pool-task.sh acquire-for MAX-825 codex)
-pool-task.sh new-session "$PANE"
-pool-task.sh send "$PANE" /tmp/plan-prompt.md
-pool-task.sh annotate "$PANE" MAX-825 plan
+pool-task.sh new-session "$PANE"            # fresh, only on phase 1
+pool-task.sh send "$PANE" plan.md
 pool-task.sh wait "$PANE"
-
-# Phase 2: same pane, agent remembers phase 1
-pool-task.sh annotate "$PANE" MAX-825 implement
-pool-task.sh send "$PANE" /tmp/implement-prompt.md
+# ... read the plan, decide, follow up ...
+pool-task.sh send "$PANE" implement.md      # same pane, same context
 pool-task.sh wait "$PANE"
-
-# Phase 3: review by the OTHER tier — independent eyes
-REV=$(pool-task.sh acquire-for MAX-825-rev opencode)
-pool-task.sh new-session "$REV"
-pool-task.sh send "$REV" /tmp/review-prompt.md
-pool-task.sh wait "$REV"
-
-# Wrap up
-pool-task.sh done "$PANE"; pool-task.sh forget MAX-825
-pool-task.sh done "$REV";  pool-task.sh forget MAX-825-rev
 ```
 
-`annotate` updates the pane's tmux title so the dashboard shows e.g.
-`MAX-825:implement`, and the registry records each phase with start /
-end timestamps for the scratchpad at `~/.claude/pool-history/MAX-825.md`.
+`pool-task.sh annotate "$PANE" MAX-825 implement` is worth sprinkling
+in if you care — it puts the phase name in the tmux title and the
+registry, so the dashboard shows what each pane is doing and the
+scratchpad at `~/.claude/pool-history/MAX-825.md` records the
+chronology. Optional; not load-bearing.
 
-## Pattern 3 — Fire-and-forget queue submission
+The trick to make this *really* pay off is to do the review pass with
+the *other* tier. Codex implements, opencode reviews — or vice versa.
+You get the same "two independent reads" benefit as Pattern 1, without
+losing the implementer's context.
 
-Best for parallel side tasks where you don't care which pane picks it
-up. Submit and move on — the dispatcher auto-routes when a matching
-idle pane is available.
+## Fire it and forget
+
+Some days you have five independent prompts that don't need to talk to
+each other. Submit them all, walk away, check the dashboard later:
 
 ```bash
-# Queue 3 codex jobs at priority 0
-for f in task1.md task2.md task3.md; do
-  pool-task.sh submit codex "/tmp/$f"
-done
-
-# Inspect what's pending
-pool-task.sh queue
-
-# Force a dispatch sweep (normally auto on submit / done)
-pool-task.sh dispatch
+pool-task.sh submit codex prompt1.md --task batch-A --priority 5
+pool-task.sh submit codex prompt2.md --task batch-B
+pool-task.sh submit codex prompt3.md
 ```
 
-Jobs run as panes free up. You can do other work; check the dashboard
-later. This is what you want for batches of independent prompts where
-serial-vs-parallel doesn't change the answer.
+The dispatcher picks them up as panes free up. Higher `--priority`
+goes first; ties resolve by submit time. This is the right mode when
+serialization doesn't change the answer — extract these summaries,
+draft these test cases, regenerate these snippets. Don't reach for it
+when prompts depend on each other; chain them through Pattern 2
+instead.
 
-## Prompt-writing tips
+## Things that bite if you skip them
 
-- **Output to a known path, not just stdout.** TUIs reflow stdout; the
-  scrollback can lose long content. Have the agent write the answer to
-  `~/.claude/pool-history/<task>.md` and print only `DONE: <path>`.
-- **End with a stop signal.** "When done, print `DONE` and stop. Do
-  not start a second pass." Agents otherwise keep iterating.
-- **Don't paste huge contexts inline.** Reference files by path; the
-  agent has filesystem access. Pasting 50KB of code into a prompt
-  blows the bracket-paste timing and can race the TUI.
+A few prompt-writing habits that the pool rewards:
 
-## Reading the output
+**Have the agent write its real answer to a file.** TUIs scroll, and
+the scrollback can lose long outputs. Tell the agent: "write your
+report to `~/.claude/pool-history/<task>.md` and print only `DONE:
+<path>` when finished." The dashboard's `wait → idle` transition then
+maps cleanly to "the file is ready to read."
 
-The dashboard tells you what to expect:
+**End with a stop signal.** Without "do not start a second pass," the
+agent will often start one. They're enthusiastic.
 
-- `wait` state on the pane → agent finished its turn and is waiting on
-  you. `pool-task.sh wait` returns at this point.
-- `busy` for >30 min on a 1-paragraph prompt → something is wrong;
-  inspect with `tmux attach -t pool` and look at the pane.
+**Reference files by path; don't paste them inline.** The agents have
+filesystem access. Pasting a 50KB diff into the prompt fights tmux's
+bracket-paste timing and occasionally the TUI loses bytes. Just write
+"review the diff at `/path/to/foo.diff`."
 
-To grab the agent's last response programmatically:
+**Don't reach for the pool when you could just read the file
+yourself.** If the answer is one grep away, the pool is theatre.
+
+## Reading what the agent wrote
+
+When `wait` returns, the agent has answered. If you followed the
+"write to a file" habit, just `cat` the file. If you didn't, or you
+need a verbatim scrollback grab:
 
 ```bash
 pool-task.sh harvest "$PANE" --lines 500 > /tmp/answer.md
 ```
 
-`harvest` strips TUI chrome (codex spinner lines, opencode footer) and
-returns clean text. For multi-turn reviews where the agent wrote to a
-file as instructed, just `cat` the file.
+`harvest` strips TUI chrome (spinner lines, footers) and returns clean
+text. Codex transcripts are pulled from on-disk JSONL; opencode
+sessions are exported from its SQLite store. Both work the same from
+the caller's side.
 
-## When NOT to use the pool
+## Cleanup
 
-- **Reads under 10 lines** — local jq/grep is faster than round-tripping
-  through a TUI.
-- **Anything that must run synchronously inside one Claude Code turn** —
-  the pool is async; if you need the answer before your next tool call,
-  just do the work yourself.
-- **Sensitive prompts** — the registry and scratchpads live on disk in
-  `~/.claude/pool-*`. Treat them like any other local file.
+When the task is logically done:
+
+```bash
+pool-task.sh done "$PANE"        # mark pane idle, trigger dispatcher
+pool-task.sh forget "$TASK"      # drop the registry entry
+```
+
+`done` alone is fine for one-shot work; `forget` is the right call
+once the task identifier shouldn't survive the session (PR merged,
+issue closed, etc.). Neither kills the agent — the pane goes back into
+the available pool for the next person to grab.
