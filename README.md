@@ -76,11 +76,11 @@ Re-run `./install.sh` after `git pull` to pick up updates. Pass
 
 | What | Why | macOS install |
 |---|---|---|
-| tmux ≥ 3.2 | Hooks (`client-resized`), `extended-keys`, multi-line input | `brew install tmux` |
-| `jq`       | The registry is a JSON file; every state mutation is a jq pipeline | `brew install jq` |
-| `codex` (OpenAI CLI) | Left-column agents — optional if you only use opencode | `brew install codex` |
-| `opencode` (sst) | Right-column agents — optional if you only use codex | `brew install sst/tap/opencode` |
-| Ghostty | The pool is designed to live in one fullscreen Ghostty window, but any modern terminal works | https://ghostty.org/ |
+| [tmux](https://github.com/tmux/tmux) ≥ 3.2 | Hooks (`client-resized`), `extended-keys`, multi-line input | `brew install tmux` |
+| [`jq`](https://jqlang.github.io/jq/) | The registry is a JSON file; every state mutation is a jq pipeline | `brew install jq` |
+| [`codex`](https://github.com/openai/codex) (OpenAI CLI) | Left-column agents — optional if you only use opencode | `brew install codex` |
+| [`opencode`](https://github.com/sst/opencode) (sst) | Right-column agents — optional if you only use codex | `brew install sst/tap/opencode` |
+| [Ghostty](https://ghostty.org/) | The pool is designed to live in one fullscreen Ghostty window, but any modern terminal works | https://ghostty.org/ |
 
 The dashboard, queue, and registry have no other dependencies. Bash 3.2
 (macOS default) is enough — scripts deliberately avoid bash-4 features
