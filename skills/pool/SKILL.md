@@ -1,6 +1,6 @@
 ---
 name: pool
-description: "Manage the agent-pool tmux session (8 panes: 4 codex + 4 opencode + monitor) and dispatch work to its panes. Use when the user wants to: start / stop / restart / status-check the pool, recycle a pane, OR fan a prompt out for parallel review across both tiers (codex + opencode), reuse a single agent across multi-phase work (plan → implement → review), or submit prompts to the async queue and let the dispatcher route them. Commands live in `pool-launch.sh` (lifecycle) and `pool-task.sh` (queue + task affinity + heartbeat registry). Triggers: 'start pool', 'pool status', 'restart pool', 'kill pool', 'parallel review', 'review with the pool', 'fan out', 'second opinion from opencode', 'ask codex and opencode', 'use the pool for X'."
+description: "Manage the agent-pool tmux session and dispatch work to its panes. Configurable shape (4×2 / 2×4 / 5×2 — monitor pane + 8 or 10 agents) via `pool-launch.sh reshape`. Slot labels: `1` for the monitor, `A`-`J` for agent panes in row-major order. Use when the user wants to: start / stop / restart / status-check / reshape the pool, recycle a pane, OR fan a prompt out for parallel review across both tiers (codex + opencode), reuse a single agent across multi-phase work (plan → implement → review), or submit prompts to the async queue. Commands live in `pool-launch.sh` (lifecycle: warm / cold / fill / autoresize / reshape / kill / status / respawn) and `pool-task.sh` (queue + task affinity + heartbeat registry: acquire-for / send / wait / done / annotate / harvest / forget). Triggers: 'start pool', 'pool status', 'restart pool', 'kill pool', 'reshape pool', 'pool 改成 2x4 / 5x2', 'parallel review', 'review with the pool', 'fan out', 'second opinion from opencode', 'ask codex and opencode', 'use the pool for X'."
 argument-hint: "[start|warm|cold|status|kill|respawn|submit|review]"
 ---
 
@@ -11,19 +11,35 @@ the user can manage the TUI pool with one input. The pool is now a queue
 system: jobs are submitted, idle panes pick them up automatically, and a
 top-row monitor pane renders live status.
 
-## Layout (monitor + 4×2)
+## Layout
+
+Three shapes, switchable at runtime via `pool-launch.sh reshape <name>`
+without killing agents:
+
+| Shape | Topology | Cells | Codex / Opencode placement |
+|---|---|---|---|
+| `4x2` (default, portrait) | monitor strip + 4 rows × 2 cols | 1 + 8 | codex left col, opencode right col |
+| `2x4` (widescreen) | monitor strip + 2 rows × 4 cols | 1 + 8 | codex top row, opencode bottom row |
+| `5x2` (tall) | monitor strip + 5 rows × 2 cols | 1 + 10 | codex left col, opencode right col |
+
+Slot labels (layout-agnostic):
+
+- `1` = monitor pane (top, full width)
+- `A`-`H` (or `A`-`J` for 5x2) = agent panes, row-major
+
+Example for the default `4x2`:
 
 ```
 ┌────────────────────────────────────────────────┐
-│ monitor (queue depth, pane status, heartbeats) │   ~6 rows
+│ 1: monitor (queue · pane state · heartbeats)   │   ~6 rows
 ├──────────────────┬─────────────────────────────┤
-│ codex   (L1)     │ opencode  (R1)              │   row 1
+│ A: codex         │ B: opencode                 │   row 1
 ├──────────────────┼─────────────────────────────┤
-│ codex   (L2)     │ opencode  (R2)              │   row 2
+│ C: codex         │ D: opencode                 │   row 2
 ├──────────────────┼─────────────────────────────┤
-│ codex   (L3)     │ opencode  (R3)              │   row 3
+│ E: codex         │ F: opencode                 │   row 3
 ├──────────────────┼─────────────────────────────┤
-│ codex   (L4)     │ opencode  (R4)              │   row 4
+│ G: codex         │ H: opencode                 │   row 4
 └──────────────────┴─────────────────────────────┘
 ```
 
@@ -36,19 +52,21 @@ Agent panes launch via `pool-wrap.sh codex|opencode`, which forks a
 heartbeat loop alongside the TUI so the dashboard can flag stale panes
 without resorting to capture-pane heuristics.
 
-**Pane indices are not row-major** — tmux assigns IDs in tree-walk order, and
-the order shifts with each split. Always discover panes via
-`pane_current_command` matching, never by hard-coded `pool:0.<N>`.
+**Tmux pane indices are not stable** — they're assigned in tree-walk order
+and shift with every split / reshape. The **slot labels** (`1`, `A`-`J`)
+ARE stable across reshapes (they re-bind to whoever sits in that physical
+position after the layout change). Always discover panes via
+`pool_position_map` (in `pool-lib.sh`), `pool-task.sh acquire-for`, or
+the dashboard — never by hard-coded `pool:0.<N>`.
 
-**Critical: never hardcode `pool:0.<N>` in any skill, prompt, or doc.** With the
-monitor strip on top, `pool:0.0` is now the dashboard pane (running
-`pool-render.sh`, not codex). Any skill that targets `pool:0.0 (codex)` /
-`pool:0.1 (opencode)` etc. by literal index will pipe prompts into the wrong
-process — most often the monitor, where keystrokes are silently lost. Always
-go through `pool-task.sh acquire-for --wait $TASK $kind`; the dispatcher
-returns whichever pane is idle, prefers fresh over done, and reuses the same
-pane on repeat calls for the same TASK. If you find yourself writing
-`pool:0.<digit>` in a SKILL.md, replace it with a task-named acquire.
+**Critical: never hardcode `pool:0.<N>` in any skill, prompt, or doc.**
+With the monitor strip on top, `pool:0.0` is the dashboard, and the
+remaining indices shift every time the pool is reshaped or recycled.
+Always go through `pool-task.sh acquire-for $TASK $kind`; the
+dispatcher returns whichever pane is idle, prefers fresh over done, and
+reuses the same pane on repeat calls for the same TASK. If you find
+yourself writing `pool:0.<digit>` in a SKILL.md, replace it with a
+task-named acquire.
 
 ## Migrating to the new layout
 
@@ -167,6 +185,30 @@ Does NOT call `fill_missing` (too slow, ~2s, and adding panes from a
 hook is too aggressive). If panes go missing, press `prefix + f` or run
 `pool fill` manually.
 
+### `reshape` — switch layout shape without killing agents
+
+```bash
+~/.local/bin/pool-launch.sh reshape 4x2   # 4 rows × 2 cols (default portrait)
+~/.local/bin/pool-launch.sh reshape 2x4   # 2 rows × 4 cols (widescreen)
+~/.local/bin/pool-launch.sh reshape 5x2   # 5 rows × 2 cols (tall; 5 cdx + 5 opc)
+```
+
+Mechanics: stash the monitor in a temp window → `swap-pane` the agent
+panes into the target index order (codex first, opencode after; per-row
+interleave for tall layouts, sequential for wide) → apply a custom
+tmux layout string for the target topology → reattach the monitor as
+a full-width 6-row strip on top. All agent processes survive.
+
+If the target needs more agents than the pool currently has (e.g.
+`reshape 5x2` from a 4×2 default), `cmd_reshape` **auto-grows** by
+`split-window` + `pool-wrap.sh` — the new agents launch fresh. Shrinking
+is intentionally rejected (would require killing live agents): the
+operator must `tmux kill-pane` extras first.
+
+Idempotent. Slot labels (`A`-`J`) re-bind to whoever occupies that
+physical position after the reshape, so external references stay
+correct.
+
 ### `cold` / `rebuild`
 
 ```bash
@@ -210,11 +252,11 @@ subcommand. The implementation calls `pool_respawn_agent_pane` (from
 ~/.local/bin/pool-launch.sh respawn --done                 # all DONE panes (prompt)
 ~/.local/bin/pool-launch.sh respawn --done --yes           # ... no prompt
 ~/.local/bin/pool-launch.sh respawn --tier codex --all     # every codex pane
-~/.local/bin/pool-launch.sh respawn --pos L3 --pos R2 --yes
+~/.local/bin/pool-launch.sh respawn --pos C,E --yes
 ~/.local/bin/pool-launch.sh respawn --monitor              # dashboard pane only
 ~/.local/bin/pool-launch.sh respawn --plan                 # diagram only
 ~/.local/bin/pool-launch.sh respawn --done --interactive   # diagram + per-pane prompt
-~/.local/bin/pool-launch.sh respawn --pos L1 --mark L1=PR-1234:fix --yes
+~/.local/bin/pool-launch.sh respawn --pos A --mark A=PR-1234:fix --yes
 ```
 
 Run `respawn --help` for the complete flag list.
@@ -240,8 +282,9 @@ Codex emits a `─ Worked for Xm Ys ─` closer at the end of each work cycle,
 but a single session can have many cycles back-to-back (rebase, follow-up
 question, conflict resolution, etc.). If the snapshot lands between cycles,
 the pane shows DONE even though the agent is still mid-task and about to
-start the next cycle. **Mitigation**: prefer explicit positions (`--yes
-L1,R2`) over `--yes ALL` whenever any pane is doing multi-step work, and
+start the next cycle. **Mitigation**: prefer explicit positions (e.g.
+`--pos A,C --yes`) over a blanket `--yes` whenever any pane is doing
+multi-step work, and
 confirm the diagram against your own knowledge of what's running before
 respawning. The interactive mode preserves this human-in-the-loop step.
 
@@ -341,10 +384,10 @@ The top-row monitor pane runs `pool-render.sh --watch` (1 Hz). Each frame:
 ```
 queue: 2 cdx / 0 opc  panes: 1 busy / 1 wait / 3 done / 3 idle  uptime 2h
 ────────────────────────────────────────────────────────────────────
-[L1] cdx MAX-623:plan  4m ♥2s       │ [R1] opc MAX-624:rev  wait ♥3s
-[L2] cdx done ♥45s                  │ [R2] opc idle ♥2s
-[L3] cdx idle ♥3s                   │ [R3] opc done ♥1s
-[L4] cdx locked (user typing)       │ [R4] opc idle ♥2s
+[A] cdx MAX-623:plan  4m ♥2s        │ [B] opc MAX-624:rev  wait ♥3s
+[C] cdx done ♥45s                   │ [D] opc idle ♥2s
+[E] cdx idle ♥3s                    │ [F] opc done ♥1s
+[G] cdx locked (user typing)        │ [H] opc idle ♥2s
 ```
 
 ### Pane state vocabulary
@@ -368,8 +411,8 @@ header only when non-zero so the line stays compact.
 
 ### Dashboard misc
 
-- Slot labels (`L1..R4`) are derived from `pane_left` / `pane_top`, not
-  from raw tmux indices, so they stay stable across splits.
+- Slot labels (`A`-`J`) are derived from `pane_top` then `pane_left`
+  (row-major) and stay stable across splits / reshapes.
 - `♥<n>s` = age of last heartbeat. Missing means the pane wasn't started
   via `pool-wrap.sh` (e.g. legacy pool that didn't get cold-rebuilt).
 
@@ -442,7 +485,7 @@ pool-launch.sh respawn --tier opencode --all --yes
 
 This kills the TUIs and relaunches them through `pool-wrap.sh`, so
 heartbeats and the registry stay consistent. For a single pane, use
-`respawn --pos L3 --yes`.
+`respawn --pos C --yes` (use any slot letter A-J).
 
 ## Anti-patterns
 
