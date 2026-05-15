@@ -60,6 +60,9 @@ pool-task.sh done "$PANE"
 ```
 
 `pool-launch.sh respawn --help` and `pool-task.sh help` list everything.
+For Claude Code dispatch patterns (parallel review, multi-phase tasks,
+fire-and-forget queues) with worked examples, see
+[**docs/claude-code.md**](./docs/claude-code.md).
 
 The dashboard refreshes every second:
 

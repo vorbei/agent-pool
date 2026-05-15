@@ -59,6 +59,8 @@ pool-task.sh done "$PANE"
 ```
 
 `pool-launch.sh respawn --help` 和 `pool-task.sh help` 列全部命令。
+**Claude Code 派活模式**（并行评审、多阶段任务、异步队列）+ 实战
+示例见 [**docs/claude-code.zh.md**](./docs/claude-code.zh.md)。
 
 仪表盘每秒刷新：
 
