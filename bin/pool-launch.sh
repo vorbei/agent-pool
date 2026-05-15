@@ -8,8 +8,7 @@
 #   fill       — restore any missing panes (4×2 + monitor) without killing live agents
 #   kill       — explicit teardown only (don't recreate)
 #   status     — list panes + Ghostty windows
-#   respawn    — recycle agent panes (see `respawn --help`); see also the deprecated
-#                aliases respawn-all / respawn-done / respawn-pos / refresh-monitor below
+#   respawn    — recycle agent panes (see `respawn --help`)
 #
 # Default is warm — running this script repeatedly does NOT kill long-running TUI agents
 # unless you explicitly say `cold` or `kill`.
@@ -24,9 +23,8 @@ CMD="${1:-warm}"
 # that won't be removed under you — your main repo root is a good choice.
 # Override with the POOL_CWD env var or by editing this default.
 CWD="${POOL_CWD:-$HOME}"
-# Legacy: $2 used to be a CWD arg for warm/cold modes. The other subcommands
-# (respawn, respawn-done, refresh-monitor) take a different second arg (KIND
-# / flag), so only warn for the modes that historically took CWD.
+# $2 used to be a CWD override for warm/cold; the other subcommands all
+# take real arguments in $2+, so only emit the warning for those modes.
 case "$CMD" in
   warm|start|cold|rebuild|""|--warm|--cold)
     if [[ -n "${2:-}" && "${2:-}" != "$CWD" ]]; then
@@ -136,10 +134,8 @@ EOF
 }
 
 # ── unified `respawn` subcommand ──────────────────────────────────────────────
-# Replaces six overlapping commands (respawn / respawn-all / respawn-done /
-# respawn-pos / refresh-monitor, plus the entirety of pool-refresh.sh) with
-# one flag-driven entry point. Legacy commands remain as thin aliases that
-# delegate here so muscle-memory keeps working.
+# One flag-driven entry point for every "kill+restart agent pane" or
+# "refresh dashboard" operation.
 
 _respawn_state_glyph() {
   case "$1" in
@@ -196,7 +192,7 @@ _respawn_pane_table() {
   done
 }
 
-# Refresh just the monitor dashboard pane (formerly `refresh-monitor`).
+# Refresh just the monitor dashboard pane (--monitor flag handler).
 _respawn_monitor() {
   tmux has-session -t pool 2>/dev/null || { echo "no pool session" >&2; return 1; }
   local mon idx
@@ -586,47 +582,9 @@ case "$CMD" in
     exit 0
     ;;
 
-  # ── deprecated subcommand aliases — delegate to unified `respawn` ──────────
-  # Old shapes preserved for ~/.tmux.conf bindings and muscle memory. The
-  # full implementations have been consolidated into cmd_respawn — these
-  # cases just translate the positional args into the unified flag set.
-  respawn-done)
-    shift
-    rdargs=(--done)
-    if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then rdargs+=(--yes); shift; fi
-    if [[ -n "${1:-}" && "$1" != "all" ]]; then rdargs+=(--tier "$1"); fi
-    cmd_respawn "${rdargs[@]}"
-    exit $?
-    ;;
-
-  refresh-monitor|monitor)
-    cmd_respawn --monitor
-    exit $?
-    ;;
-
-  respawn-all|force)
-    cmd_respawn --all --yes
-    exit $?
-    ;;
-
-  respawn-pos)
-    pos="${2:-}"
-    [[ -z "$pos" ]] && { echo "usage: pool-launch.sh respawn-pos L1|L2|L3|L4|R1|R2|R3|R4" >&2; exit 2; }
-    cmd_respawn --pos "$pos" --yes
-    exit $?
-    ;;
-
   respawn)
-    # Two shapes:
-    #   respawn codex|opencode             (legacy positional, force all of tier)
-    #   respawn --flag ... --flag ...      (new flag-driven CLI)
     shift
-    case "${1:-}" in
-      codex|opencode)
-        cmd_respawn --tier "$1" --all --yes ;;
-      *)
-        cmd_respawn "$@" ;;
-    esac
+    cmd_respawn "$@"
     exit $?
     ;;
 
@@ -694,11 +652,7 @@ case "$CMD" in
     echo "  status            — list panes + clients + Ghostty windows" >&2
     echo "  respawn [flags]   — recycle agent panes; \`respawn --help\` for full flag list" >&2
     echo "" >&2
-    echo "Deprecated aliases (delegate to \`respawn\` — kept for muscle memory / tmux bindings):" >&2
-    echo "  respawn KIND, respawn-all, respawn-done, respawn-pos POS, refresh-monitor" >&2
-    echo "" >&2
     echo "Pool starts at \$POOL_CWD (default: \$HOME). Edit pool-launch.sh CWD= or set POOL_CWD." >&2
-    echo "Per-task work cd's into worktrees from inside the agent panes." >&2
     exit 2
     ;;
 esac

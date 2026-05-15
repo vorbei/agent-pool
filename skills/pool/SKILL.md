@@ -234,21 +234,6 @@ pane into one of four states. The same classifier is used by
 
 Only `DONE` panes are offered by `--done`; `--all` ignores state.
 
-#### Deprecated subcommands (still work)
-
-These remain as thin aliases so muscle memory / older tmux configs keep
-working — each translates its positional args to flags and delegates to
-`respawn`:
-
-| Deprecated | Equivalent flag form |
-|---|---|
-| `respawn codex` / `respawn opencode` | `respawn --tier KIND --all --yes` |
-| `respawn-all`, `force` | `respawn --all --yes` |
-| `respawn-done [-y] [codex\|opencode\|all]` | `respawn --done [--tier KIND] [--yes]` |
-| `respawn-pos L3` | `respawn --pos L3 --yes` |
-| `refresh-monitor`, `monitor` | `respawn --monitor` |
-| `pool-refresh.sh` | `respawn --done --interactive` (`pool-refresh.sh` is now a wrapper) |
-
 #### Detector limitation: inter-cycle false positives on codex
 
 Codex emits a `─ Worked for Xm Ys ─` closer at the end of each work cycle,
@@ -279,7 +264,6 @@ tmux has-session -t pool 2>/dev/null && pool-launch.sh warm || echo "no pool"
 | File | Holds |
 |---|---|
 | `~/.local/bin/pool-launch.sh` | tmux+Ghostty bootstrap, 4×2 split sequence, warm/cold dispatch, position calibration |
-| `~/.local/bin/pool-refresh.sh` | quiescent-pane detector + diagram-based confirmation prompt + safe respawn (`refresh` subcommand) |
 | `~/.tmux.conf` | truecolor passthrough + `allow-passthrough on` + heavy pane borders + extended-keys (csi-u) for multi-line input + per-pane border style |
 | `~/Library/Application Support/com.mitchellh.ghostty/config` | `theme = Everforest Dark Hard` + `minimum-contrast = 3` (WCAG AA) + `font-size = 12` + `font-thicken = true` + `bold-is-bright = true` + `window-padding-x/y = 8` |
 | `~/.codex/config.toml` | `theme = "light"`, model defaults, features.goals enabled |
