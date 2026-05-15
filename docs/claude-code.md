@@ -7,6 +7,41 @@ parallel review, multi-phase work on one pane, and async batch
 submission. Below each one: when to reach for it, a minimal snippet,
 and the caveats that matter.
 
+## How Claude Code knows about the pool
+
+`./install.sh` copies the skill to `~/.claude/skills/pool/SKILL.md`.
+Claude Code loads it on session start and matches it against your
+prompts via the description in its frontmatter.
+
+Things that should trigger it without extra ceremony:
+
+- "start the pool", "pool status", "restart pool", "kill the pool"
+- "review this PR with the pool", "parallel review with codex and opencode"
+- "get a second opinion from opencode on the diff"
+- "use the pool for X"
+
+If Claude Code doesn't pick it up, you can also be explicit: "use the
+`pool` skill to ..." or just paste a `pool-task.sh submit ...` command
+and ask Claude Code to run it.
+
+**To make the pool a default for a repeated workflow**, add a section
+to your project's `CLAUDE.md`:
+
+```markdown
+## Code review
+
+For non-trivial diffs, run a parallel review through the pool: one
+codex pane and one opencode pane in parallel via `pool-task.sh
+acquire-for / send / wait`. Read both reports, synthesize the
+overlap as the high-confidence findings. See
+~/vorbei/agent-pool/docs/claude-code.md for the snippet.
+```
+
+Same idea applies to "use the pool for any task that fans out into
+independent sub-prompts" or "always do plan → implement on the same
+acquired pane." Claude Code reads project CLAUDE.md every session, so
+these become reflexes rather than per-request asks.
+
 ## Parallel review (codex + opencode)
 
 Submit the same prompt to one codex pane and one opencode pane at the

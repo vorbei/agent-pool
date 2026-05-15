@@ -6,6 +6,36 @@
 跨阶段、异步批量提交。下面每种模式给出适用场景、最小代码、和该注意
 的坑。
 
+## Claude Code 怎么知道池的存在
+
+`./install.sh` 会把 skill 复制到 `~/.claude/skills/pool/SKILL.md`。
+Claude Code 每次启动会话时加载它，根据 frontmatter 的 description
+跟你的提示词做匹配。
+
+不用额外铺垫就能触发的说法：
+
+- "起一下 pool"、"pool 状态"、"重启 pool"、"关掉 pool"
+- "用 pool 评审这个 PR"、"codex 和 opencode 并行评审"
+- "让 opencode 看一眼这个 diff 当第二意见"
+- "用池做 X"
+
+如果 Claude Code 没主动 reach for，也可以直接说："用 `pool` skill
+做……"，或者把 `pool-task.sh submit ...` 命令贴出来让它执行。
+
+**想让池成为某类工作的默认做法**，在项目的 `CLAUDE.md` 里加一段：
+
+```markdown
+## 代码评审
+
+非平凡 diff 默认走池并行评审：一个 codex pane + 一个 opencode pane，
+通过 `pool-task.sh acquire-for / send / wait` 并行跑。读两份报告，
+交集作为高置信发现。详见 ~/vorbei/agent-pool/docs/claude-code.zh.md。
+```
+
+类似地可以写"任何能拆成独立子任务的工作走池"或者"plan → implement
+默认在同一个 acquire 的 pane 上做"。Claude Code 每次会话都会读项目
+CLAUDE.md，这些就变成条件反射、不用每次提。
+
 ## 并行评审（codex + opencode）
 
 同一份 prompt 同时丢给一个 codex pane 和一个 opencode pane，两边

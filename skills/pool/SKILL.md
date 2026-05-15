@@ -1,7 +1,7 @@
 ---
 name: pool
-description: "Launch, inspect, restart, or kill the shared TUI pool — one tmux session named `pool` with a thin monitor row + 8 agent panes (4×2: codex / opencode) inside a single fullscreen Ghostty window on the portrait display. Default `start` is **warm**: if the pool is already running, just attach Ghostty without killing the long-running TUI agents. Cold rebuilds and explicit kills are opt-in. The pool is the substrate the `/mo-*` skills (mo-plan / mo-work / mo-fix / mo-debug / mo-swarm) target via `pool:0.<index>`. Triggers: 'init pool', 'start pool', 'launch pool', '起 pool', '初始化池子', 'pool 重启', 'pool 状态', 'pool kill', 'kill pool', '关掉 pool'."
-argument-hint: "[start|warm|cold|status|kill|respawn]"
+description: "Manage the agent-pool tmux session (8 panes: 4 codex + 4 opencode + monitor) and dispatch work to its panes. Use when the user wants to: start / stop / restart / status-check the pool, recycle a pane, OR fan a prompt out for parallel review across both tiers (codex + opencode), reuse a single agent across multi-phase work (plan → implement → review), or submit prompts to the async queue and let the dispatcher route them. Commands live in `pool-launch.sh` (lifecycle) and `pool-task.sh` (queue + task affinity + heartbeat registry). Triggers: 'start pool', 'pool status', 'restart pool', 'kill pool', 'parallel review', 'review with the pool', 'fan out', 'second opinion from opencode', 'ask codex and opencode', 'use the pool for X'."
+argument-hint: "[start|warm|cold|status|kill|respawn|submit|review]"
 ---
 
 # pool
@@ -110,9 +110,9 @@ directory that got removed (e.g. after a worktree teardown).
 
 If a `pool` tmux session already exists, **don't kill it** — just attach
 Ghostty (or bring the existing Ghostty window to front), re-fit the
-window on the portrait display, and **fill any missing panes**
-(see `fill` below). Long-running TUI agents survive. If no pool exists
-yet, this falls through to the cold path below.
+window, and **fill any missing panes** (see `fill` below). Long-running
+TUI agents survive. If no pool exists yet, this falls through to the
+cold path below.
 
 This is the operation you run when you closed the Ghostty window earlier
 and want it back, or after a system sleep / display reconnect, or when
@@ -214,7 +214,7 @@ subcommand. The implementation calls `pool_respawn_agent_pane` (from
 ~/.local/bin/pool-launch.sh respawn --monitor              # dashboard pane only
 ~/.local/bin/pool-launch.sh respawn --plan                 # diagram only
 ~/.local/bin/pool-launch.sh respawn --done --interactive   # diagram + per-pane prompt
-~/.local/bin/pool-launch.sh respawn --pos L1 --mark L1=MAX-825:fix --yes
+~/.local/bin/pool-launch.sh respawn --pos L1 --mark L1=PR-1234:fix --yes
 ```
 
 Run `respawn --help` for the complete flag list.
@@ -378,13 +378,13 @@ scripting / debugging.
 
 ## Task affinity — `pool-task.sh`
 
-The mo-* protocol's default is **stateless**: each `pool_acquire` is followed
-by a kind-specific reset (`/new` / `Ctrl+X N` / `/clear`), wiping the
-TUI's conversation memory. That works when each pool use is independent.
+The naive way to use a pool is **stateless**: grab a pane, reset its
+conversation (codex `/new`, opencode `Ctrl+X N`), send a prompt, take
+the answer back. That works when each use is independent.
 
-It breaks when the same task progresses through **plan → debug → coding →
-review** — every phase loses the context the previous phase built up, and
-each TUI has to be re-primed from scratch.
+It breaks when the same task progresses through **plan → debug → fix →
+review** — every phase loses the context the previous phase built up,
+and each TUI has to be re-primed from scratch.
 
 `~/.local/bin/pool-task.sh` is a **stateful affinity layer** on top of
 the pool. It records which task owns which pane in a JSON registry
@@ -400,12 +400,12 @@ working a known task — the conversation memory carries phase-to-phase.
 | `pool-task.sh release <pane>` | Mark current phase ended (timestamp). Pane stays assigned to the task — next `acquire-for` returns it again. |
 | `pool-task.sh list` | Show all task → pane mappings, current phase chain, last-used timestamps, scratchpad paths. |
 | `pool-task.sh scratchpad <task>` | Print path to the per-task scratchpad markdown (`~/.claude/pool-history/<task>.md`). Creates skeleton if missing. |
-| `pool-task.sh forget <task>` | Remove task from registry; clear pane title. Use when the task is fully closed (PR merged, `mo-clean` run, etc.). |
+| `pool-task.sh forget <task>` | Remove task from registry; clear pane title. Use when the task is fully closed (PR merged, ticket closed, etc.). |
 
 ### When to use which
 
 - **Multi-phase task within one session** (the common case) — `acquire-for` once at the start; `annotate` at each phase transition; `release` between phases; `forget` at task close.
-- **One-off, no follow-up** — bypass the affinity layer. The mo-* default `pool_acquire` + reset is fine.
+- **One-off, no follow-up** — bypass the affinity layer; submit to the queue or just acquire + reset.
 - **Resuming after a TUI death / pool cold-rebuild** — the registry survives but the pane is gone. `acquire-for` detects this (pane_id no longer in `tmux list-panes`), drops the stale entry, and falls back to fresh acquire. The scratchpad markdown is the recovery anchor — read it to re-prime the new pane.
 
 ### Scratchpad discipline
@@ -419,37 +419,30 @@ agents append a 5-10 line summary at the end of each phase:
 ## Phases
 
 ### plan — 2026-05-06 19:00 → 19:30
-Cherry-pick #1520 onto release/2026-04-28. 7 files, 157+/5-. Squash 3 commits.
+3-bullet design for feature X. Approved by user; implement next.
 
 ### review — 2026-05-06 19:45
-Codex P1: bare catch in format-time.ts swallows non-RangeError. Inherited from origin PR; tracked as separate fix.
+Other-tier review found: bare catch in helper swallows non-RangeError.
+Tracked separately, otherwise looks good.
 ```
 
 When a future session resumes the task, the scratchpad provides enough
 context to re-prime any TUI without losing history-of-decisions.
 
-### Compatibility with mo-* skills
-
-mo-* skills (`mo-plan`, `mo-fix`, `mo-work`, `mo-debug`, `mo-swarm`,
-`mo-handoff`) all go through `pool-task.sh` now. The legacy
-`pool_acquire` / `pool_reset` shell helpers in those skills' SKILL.md
-have been replaced with `pool-task.sh acquire-for --wait` /
-`pool-task.sh send` / `pool-task.sh wait` / `pool-task.sh done`. The
-canonical "Pool protocol" section lives in `mo-plan` SKILL.md; the
-others reference it.
+### Recycling a pane's memory
 
 If you need to hard-wipe a previously-used pane's TUI memory (rare —
-the dispatcher's fresh-pane preference handles 90% of cases), run
-`pool-launch.sh respawn codex` (or `opencode`) once to recycle that
-entire tier with `pool-wrap.sh` heartbeats intact.
+the dispatcher prefers fresh panes when matching the queue), recycle
+the tier:
 
-## Linking to `/mo-*` skills
+```bash
+pool-launch.sh respawn --tier codex --all --yes
+pool-launch.sh respawn --tier opencode --all --yes
+```
 
-`/mo-plan § Pool protocol` is the canonical reference for how downstream
-mo-* skills acquire panes (`pool:0.<index>` — discovered, never hardcoded),
-reset (kind-specific: codex `/new`, opencode `Ctrl+X N`), and wait for
-OUT-file verdicts. The pool-task.sh affinity layer described above is the
-project-level overlay that prefers reuse over reset for multi-phase work.
+This kills the TUIs and relaunches them through `pool-wrap.sh`, so
+heartbeats and the registry stay consistent. For a single pane, use
+`respawn --pos L3 --yes`.
 
 ## Anti-patterns
 
@@ -476,9 +469,9 @@ project-level overlay that prefers reuse over reset for multi-phase work.
 State the action taken and verify in one line. Examples:
 
 > ✅ pool warm-attached — existing 8-pane session reused, no agents killed.
-> ✅ pool started — 8 panes 4×2 (left col 4× codex, right col 4× opencode), Ghostty fullscreen portrait.
+> ✅ pool started — 8 panes 4×2 (left col 4× codex, right col 4× opencode), Ghostty fullscreen.
 > ✅ pool killed — tmux session gone, Ghostty quit.
 
 If something failed (missing pool-launch.sh, Ghostty not installed,
-no portrait display), say what failed and link to the persistent-files
-table for what to recreate.
+display geometry detection failed), say what failed and link to the
+persistent-files table for what to recreate.
