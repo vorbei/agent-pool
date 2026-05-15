@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Optional: ~/.config/opencode/opencode.json — the opencode tier of",
+    "the pool (R1-R4 right column) launches with this. Permissions are",
+    "the important bits: '*: allow' avoids approval prompts in idle",
+    "panes, but destructive shell operations and external directory /",
+    "webfetch are gated to 'ask' so the agent can't silently rm-rf or",
+    "exfiltrate."
+  ],
+  "permissions": {
+    "default": "allow",
+    "bash": {
+      "destructive": "ask",
+      "external_directory": "ask"
+    },
+    "webfetch": "ask"
+  }
+}

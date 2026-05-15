@@ -1,0 +1,48 @@
+# ── agent-pool tmux bindings ──────────────────────────────────────────────────
+# Append to your ~/.tmux.conf, then `tmux source-file ~/.tmux.conf` or
+# restart tmux.
+
+# Adaptive resize: rebalance pane heights whenever the terminal cell grid
+# changes (Ghostty drag-stop, font change, display reconnect). Debounced
+# 1s and mutex-locked inside the script so a rapid drag burst doesn't
+# stack overlapping fix_layout calls.
+set-hook -g client-resized 'run-shell "~/.local/bin/pool-launch.sh autoresize"'
+
+# Pool one-keystroke commands (prefix + key):
+#   prefix + f   →  fill missing panes (no agent kills)
+#   prefix + r   →  recycle all DONE panes (those with history, not busy)
+#   prefix + R   →  force-recycle every agent pane (DOES kill agents)
+#   prefix + 1-4 →  recycle a single left-column pane  (L1..L4 = codex)
+#   prefix + 5-8 →  recycle a single right-column pane (R1..R4 = opencode)
+bind f run-shell '~/.local/bin/pool-launch.sh fill'
+bind r run-shell '~/.local/bin/pool-launch.sh respawn --done --yes'
+bind R run-shell '~/.local/bin/pool-launch.sh respawn --all --yes'
+bind 1 run-shell '~/.local/bin/pool-launch.sh respawn --pos L1 --yes'
+bind 2 run-shell '~/.local/bin/pool-launch.sh respawn --pos L2 --yes'
+bind 3 run-shell '~/.local/bin/pool-launch.sh respawn --pos L3 --yes'
+bind 4 run-shell '~/.local/bin/pool-launch.sh respawn --pos L4 --yes'
+bind 5 run-shell '~/.local/bin/pool-launch.sh respawn --pos R1 --yes'
+bind 6 run-shell '~/.local/bin/pool-launch.sh respawn --pos R2 --yes'
+bind 7 run-shell '~/.local/bin/pool-launch.sh respawn --pos R3 --yes'
+bind 8 run-shell '~/.local/bin/pool-launch.sh respawn --pos R4 --yes'
+
+# ── optional cosmetic tweaks the pool dashboard depends on ────────────────────
+# Pool's monitor pane (pool:0.0) shows the dashboard via pool-render.sh.
+# These borders + truecolor settings make per-pane status easy to scan.
+
+# Truecolor passthrough so opencode/codex render correctly.
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",*256col*:Tc"
+set -as terminal-features ",xterm-256color:RGB"
+
+# OSC passthrough so TUIs can query terminal bg via OSC 11.
+set -g allow-passthrough on
+
+# Allow Shift+Enter / Cmd+Enter for multi-line input in the agents.
+set -g extended-keys on
+set -as terminal-features 'xterm*:extkeys'
+set -g extended-keys-format csi-u
+
+# Per-pane border with pane title — useful for seeing which agent + task.
+set -wg pane-border-status top
+set -wg pane-border-lines heavy

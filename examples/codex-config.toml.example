@@ -1,0 +1,11 @@
+# Optional: drop into ~/.codex/config.toml if you use OpenAI Codex CLI as
+# the codex tier of the pool. This is what the pool's L1-L4 codex panes
+# launch with — agent-pool itself doesn't require codex, but the default
+# layout has 4 codex panes on the left column.
+
+theme = "light"
+
+# Pool agents work better with goals enabled — codex tracks what it's
+# trying to accomplish across multi-turn conversations.
+[features]
+goals = true
