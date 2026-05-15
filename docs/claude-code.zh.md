@@ -2,11 +2,11 @@
 
 > [English](./claude-code.md) · 简体中文
 
-从 Claude Code 会话里调用池，常见的就三种模式：并行评审、单 pane
+从 Claude Code 会话里调用 pool，常见的就三种模式：并行评审、单 pane
 跨阶段、异步批量提交。下面每种模式给出适用场景、最小代码、和该注意
 的坑。
 
-## Claude Code 怎么知道池的存在
+## Claude Code 怎么知道 pool 的存在
 
 `./install.sh` 会把 skill 复制到 `~/.claude/skills/pool/SKILL.md`。
 Claude Code 每次启动会话时加载它，根据 frontmatter 的 description
@@ -17,22 +17,22 @@ Claude Code 每次启动会话时加载它，根据 frontmatter 的 description
 - "起一下 pool"、"pool 状态"、"重启 pool"、"关掉 pool"
 - "用 pool 评审这个 PR"、"codex 和 opencode 并行评审"
 - "让 opencode 看一眼这个 diff 当第二意见"
-- "用池做 X"
+- "用 pool 做 X"
 
 如果 Claude Code 没主动 reach for，也可以直接说："用 `pool` skill
 做……"，或者把 `pool-task.sh submit ...` 命令贴出来让它执行。
 
-**想让池成为某类工作的默认做法**，在项目的 `CLAUDE.md` 里加一段：
+**想让 pool 成为某类工作的默认做法**，在项目的 `CLAUDE.md` 里加一段：
 
 ```markdown
 ## 代码评审
 
-非平凡 diff 默认走池并行评审：一个 codex pane + 一个 opencode pane，
+非平凡 diff 默认走 pool 并行评审：一个 codex pane + 一个 opencode pane，
 通过 `pool-task.sh acquire-for / send / wait` 并行跑。读两份报告，
 交集作为高置信发现。详见 ~/vorbei/agent-pool/docs/claude-code.zh.md。
 ```
 
-类似地可以写"任何能拆成独立子任务的工作走池"或者"plan → implement
+类似地可以写"任何能拆成独立子任务的工作走 pool"或者"plan → implement
 默认在同一个 acquire 的 pane 上做"。Claude Code 每次会话都会读项目
 CLAUDE.md，这些就变成条件反射、不用每次提。
 
@@ -41,7 +41,7 @@ CLAUDE.md，这些就变成条件反射、不用每次提。
 同一份 prompt 同时丢给一个 codex pane 和一个 opencode pane，两边
 独立产出报告。**交集**是高置信发现；差集是需要人工判断的地方。
 
-实例：我们用这个模式评审过池自己的脚本（5 个文件，~2K 行）。墙钟
+实例：我们用这个模式评审过 pool 自己的脚本（5 个文件，~2K 行）。墙钟
 3 分钟，codex 产出 ~12KB 报告、opencode ~17KB。**收敛**：两人都点出
 `cmd_dispatch` 的嵌套锁 bug、两人都点出 `pool-refresh.sh` 绕过
 `pool-wrap.sh`。**发散**：codex 抓到 `gc-stale` 文档行为不一致、
@@ -106,7 +106,7 @@ pool-task.sh submit codex prompt3.md
   agent 经常自己接着卷。
 - **用路径引用文件，别 inline 粘贴。** Agent 有文件系统访问能力。
   大块内容 inline 会跟 tmux 的 bracket-paste 抢节奏。
-- **能 grep 解决的就别走池。** 池不是免费的——3 分钟墙钟加上下文
+- **能 grep 解决的就别走 pool。** pool 不是免费的——3 分钟墙钟加上下文
   切换是地板。
 
 ## 读 agent 的输出
@@ -128,4 +128,4 @@ pool-task.sh done "$PANE"        # 标为 idle，触发 dispatcher
 pool-task.sh forget "$TASK"      # 删注册表条目
 ```
 
-都不杀 agent，pane 回到池里供下次用。
+都不杀 agent，pane 回到 pool 里供下次用。

@@ -2,7 +2,7 @@
 
 > [English](./README.md) · 简体中文
 
-一个常驻的 8-agent tmux 池：左列 4 个
+一个常驻的 8-agent tmux pool：左列 4 个
 [Codex CLI](https://github.com/openai/codex)、右列 4 个
 [opencode](https://github.com/sst/opencode)、顶部一个实时仪表盘。
 Agent 在任务之间保持热启动；一个小队列把新 prompt 路由到任意空闲 pane。
@@ -37,7 +37,7 @@ cd agent-pool
 [opencode](https://github.com/sst/opencode)、
 可选 [Ghostty](https://ghostty.org/)。
 
-设 `POOL_CWD`（或改 `pool-launch.sh:CWD=`）把池钉到一个稳定目录——agent
+设 `POOL_CWD`（或改 `pool-launch.sh:CWD=`）把 pool 钉到一个稳定目录——agent
 会从那里 `cd` 进子目录干活。
 
 ## 用法
@@ -86,7 +86,7 @@ queue: 2 cdx / 0 opc  panes: 1 busy / 1 wait / 3 done / 3 idle  uptime 2h
 - tmux `client-resized` hook 触发 `pool-launch.sh autoresize`，重新均分
   pane 高度（1 秒 debounce + 互斥锁）
 
-池是单机、单 tmux server；4×2 布局硬编码——要别的拓扑改
+pool 是单机、单 tmux server；4×2 布局硬编码——要别的拓扑改
 `pool-launch.sh` 里的 `build_pool()`。
 
 ## License
